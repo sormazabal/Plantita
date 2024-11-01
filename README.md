@@ -2,7 +2,7 @@
 Semester project for Intro to AIoT at TIGP.
 
 ## Authors:
-- Eugene Sy ()
+- Eugene Sy (@eugenesy)
 - Zow Ormazabal (@sormazabal)
 
 
