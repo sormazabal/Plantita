@@ -12,6 +12,7 @@ Semester project for Intro to AIoT at TIGP.
 - Plant
 
 ## APIs:
-- Gruq
+- Groq
 - LINE
+- ngrok [https://ngrok.com]
 - [PlantId](https://www.plant.id/)
