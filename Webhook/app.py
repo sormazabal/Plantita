@@ -13,26 +13,6 @@ import json
 import requests
 import base64
 from groq import Groq
-import asyncio
-from groq import Groq
-from ble_monitor import BLEMonitor  # Save the previous code as ble_monitor.py
-import nest_asyncio
-
-# Apply nest_asyncio to allow asyncio in Flask
-nest_asyncio.apply()
-
-# Initialize Groq client (add this after other initializations)
-groq_client = Groq(api_key=os.getenv('GROQ_API_KEY', "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"))
-
-# Initialize BLE monitor
-ble_monitor = BLEMonitor(line_bot_api, groq_client)
-
-# Add this function to start the BLE monitoring loop
-def start_ble_monitor():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(ble_monitor.monitor_loop())
-
 
 # Set up logging
 logging.basicConfig(
@@ -229,6 +209,94 @@ def save_image(message_content, user_id):
     logger.info(f"Image saved: {file_path}")
     return file_path
 
+def get_current_readings():
+    """Get current readings from Arduino sensors"""
+    try:
+        # Initialize serial connection to Arduino
+        import serial
+        arduino = serial.Serial('/dev/ttyUSB0', 9600)  # Adjust port as needed
+        arduino.timeout = 5  # Set timeout for reading
+
+        # Wait for connection to stabilize
+        import time
+        time.sleep(2)
+
+        # Read data from Arduino
+        readings = {
+            'temperature': None,
+            'humidity': None,
+            'pressure': None
+        }
+
+        # Read each sensor value
+        try:
+            temperature = float(arduino.readline().decode().strip())
+            humidity = float(arduino.readline().decode().strip())
+            pressure = float(arduino.readline().decode().strip())
+
+            readings = {
+                'temperature': temperature,
+                'humidity': humidity,
+                'pressure': pressure
+            }
+        finally:
+            arduino.close()
+
+        return readings
+
+    except Exception as e:
+        logger.error(f"Error reading sensor data: {str(e)}")
+        return None
+
+def get_plant_status_message(user_id, readings):
+    """Generate a status message using Groq based on current readings"""
+    try:
+        # Load user's plant data
+        plant_data_file = os.path.join(USER_DATA_FOLDER, f'plant_data_{user_id}.json')
+        if not os.path.exists(plant_data_file):
+            return "I don't have any registered plants for you yet! Would you like to register one? Just type 'register' to get started! 🌱"
+
+        with open(plant_data_file, 'r') as f:
+            plant_data = json.load(f)
+
+        if not readings:
+            return "I'm having trouble reading the sensor data right now. Please try again in a few minutes! 🌿"
+
+        # Initialize Groq client
+        client = Groq(
+            api_key=os.getenv('GROQ_API_KEY', "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")
+        )
+
+        # Create prompt for Groq
+        thresholds = plant_data['thresholds']
+        plant_name = plant_data.get('nickname', plant_data['scientific_name'])
+
+        prompt = (
+            f"You are Plantita, an expert plant care advisor with a warm, caring personality like a concerned aunt.\n\n"
+            f"Current readings for {plant_name}:\n"
+            f"Temperature: {readings['temperature']}°C (ideal range: {thresholds['temperature']['min']}-{thresholds['temperature']['max']}°C)\n"
+            f"Humidity: {readings['humidity']}% (ideal range: {thresholds['humidity']['min']}-{thresholds['humidity']['max']}%)\n"
+            f"Pressure: {readings['pressure']} hPa\n\n"
+            f"Please provide:\n"
+            f"1. A friendly assessment of the current conditions\n"
+            f"2. Any immediate actions needed\n"
+            f"3. Tips for maintaining optimal conditions\n\n"
+            f"Keep your response conversational and caring, like checking on a beloved plant. Limit the response to 3-4 sentences."
+        )
+
+        # Get response from Groq
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-8b-8192"
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        logger.error(f"Error generating plant status: {str(e)}")
+        return "I'm having trouble checking on your plant right now. Please try again later! 🌿"
+
+
 def save_user_plant_data(user_id, plant_data):
     """Save user's plant data to JSON file"""
     filename = f'plant_data_{user_id}.json'
@@ -421,6 +489,10 @@ def handle_text_message(event):
             )
             user_states[user_id] = {'state': 'idle'}
 
+        elif text.startswith("hi plantita, can you check on my plant"):
+            readings = get_current_readings()
+            reply = get_plant_status_message(user_id, readings)
+
         else:
             reply = "Hello! 👋 I'm Plantita Bot. I can help you:\n\n" \
                     "1. Register your plant (type 'register')\n" \
@@ -438,14 +510,6 @@ def handle_text_message(event):
     except Exception as e:
         logger.error(f"Error handling text message: {str(e)}", exc_info=True)
 
-# Modify the main block to start the BLE monitor in a separate thread
 if __name__ == "__main__":
-    import threading
-
-    # Start BLE monitor in a separate thread
-    ble_thread = threading.Thread(target=start_ble_monitor, daemon=True)
-    ble_thread.start()
-
-    # Start Flask app
     logger.info("Starting Plantita Bot locally...")
     app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
