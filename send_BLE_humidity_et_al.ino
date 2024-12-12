@@ -71,7 +71,7 @@ void loop() {
       float humidity = HS300x.readHumidity();
       float pressure = BARO.readPressure();
       int soilMoistureRaw = analogRead(soilMoistureAnalogPin);
-      float soilMoisturePercentage = map(soilMoistureRaw, 0, 1023, 0, 100);
+      float soilMoisturePercentage = abs(100 - map(soilMoistureRaw, 200, 1023, 0, 100));
 
       // Update BLE characteristics
       temperatureCharacteristic.writeValue(temperature);
