@@ -13,6 +13,26 @@ import json
 import requests
 import base64
 from groq import Groq
+import asyncio
+from groq import Groq
+from ble_monitor import BLEMonitor  # Save the previous code as ble_monitor.py
+import nest_asyncio
+
+# Apply nest_asyncio to allow asyncio in Flask
+nest_asyncio.apply()
+
+# Initialize Groq client (add this after other initializations)
+groq_client = Groq(api_key=os.getenv('GROQ_API_KEY', "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"))
+
+# Initialize BLE monitor
+ble_monitor = BLEMonitor(line_bot_api, groq_client)
+
+# Add this function to start the BLE monitoring loop
+def start_ble_monitor():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(ble_monitor.monitor_loop())
+
 
 # Set up logging
 logging.basicConfig(
@@ -418,6 +438,14 @@ def handle_text_message(event):
     except Exception as e:
         logger.error(f"Error handling text message: {str(e)}", exc_info=True)
 
+# Modify the main block to start the BLE monitor in a separate thread
 if __name__ == "__main__":
+    import threading
+
+    # Start BLE monitor in a separate thread
+    ble_thread = threading.Thread(target=start_ble_monitor, daemon=True)
+    ble_thread.start()
+
+    # Start Flask app
     logger.info("Starting Plantita Bot locally...")
     app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
