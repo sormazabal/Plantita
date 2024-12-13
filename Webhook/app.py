@@ -228,6 +228,12 @@ def update_plant_data(user_id):
         with open(file_path, 'r+') as f:
             data = json.load(f)
 
+            # Check if it's time to update based on frequency
+            last_check = datetime.fromisoformat(data.get('last_check_time', '2000-01-01T00:00:00'))
+            frequency_minutes = data.get('monitoring_frequency', 60)  # default to hourly if not set
+            if datetime.now() - last_check < timedelta(minutes=frequency_minutes):
+                return  # Skip update if not enough time has passed
+
             # Initialize history if not present
             if 'reading_history' not in data:
                 data['reading_history'] = []
@@ -246,8 +252,9 @@ def update_plant_data(user_id):
                 if datetime.fromisoformat(reading['timestamp']) > week_ago
             ]
 
-            # Update latest reading
+            # Update latest reading and check time
             data['latest_reading'] = current_reading
+            data['last_check_time'] = datetime.now().isoformat()
 
             # Reset file pointer and write updated data
             f.seek(0)
@@ -255,39 +262,92 @@ def update_plant_data(user_id):
             f.truncate()
 
             # Check thresholds and send notification if needed
-            check_thresholds(user_id, current_reading, data['thresholds'])
+            check_thresholds(user_id, current_reading, data['thresholds'], data.get('nickname', 'your plant'))
 
     except Exception as e:
         logger.error(f"Error updating plant data: {str(e)}")
 
-def check_thresholds(user_id, reading, thresholds):
+def check_thresholds(user_id, reading, thresholds, plant_nickname=None):
     """Check if readings are outside thresholds and notify user"""
     try:
         alerts = []
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        file_path = os.path.join(USER_DATA_FOLDER, f'plant_data_{user_id}.json')
+
+        with open(file_path, 'r') as f:
+            plant_data = json.load(f)
+
+        # Get monitoring frequency and nickname
+        monitoring_frequency = plant_data.get('monitoring_frequency', 60)  # default to hourly
+        plant_nickname = plant_data.get('nickname', 'your plant')
 
         for metric, value in reading.items():
+            if metric == 'timestamp':  # Skip timestamp field
+                continue
+
             if metric in thresholds and isinstance(value, (int, float)):
                 threshold = thresholds[metric]
-                if value < threshold['min'] or value > threshold['max']:
-                    alerts.append(f"{metric}: {value}")
+                if value < threshold['min']:
+                    alerts.append({
+                        'metric': metric,
+                        'value': value,
+                        'threshold': threshold['min'],
+                        'condition': 'low'
+                    })
+                elif value > threshold['max']:
+                    alerts.append({
+                        'metric': metric,
+                        'value': value,
+                        'threshold': threshold['max'],
+                        'condition': 'high'
+                    })
 
         if alerts:
-            send_alert(user_id, alerts, reading, thresholds)
+            # Check if we should send an alert based on monitoring frequency
+            last_alert_time = plant_data.get('last_alert_time')
+            if last_alert_time:
+                last_alert = datetime.fromisoformat(last_alert_time)
+                min_time_between_alerts = timedelta(minutes=monitoring_frequency)
+                if datetime.now() - last_alert < min_time_between_alerts:
+                    logger.info(f"Skipping alert for {user_id}, not enough time elapsed since last alert")
+                    return
+
+            # Update last alert time
+            plant_data['last_alert_time'] = timestamp
+            with open(file_path, 'w') as f:
+                json.dump(plant_data, f, indent=4)
+
+            send_alert(user_id, alerts, reading, thresholds, plant_nickname)
 
     except Exception as e:
         logger.error(f"Error checking thresholds: {str(e)}")
 
-def send_alert(user_id, alerts, reading, thresholds):
+def send_alert(user_id, alerts, reading, thresholds, plant_nickname):
     """Send alert message using LLM for natural language"""
     try:
         client = Groq(api_key=os.getenv('GROQ_API_KEY'))
 
+        # Format alerts for better prompt
+        alert_details = []
+        for alert in alerts:
+            metric_name = alert['metric'].replace('_', ' ').title()
+            condition = 'too low' if alert['condition'] == 'low' else 'too high'
+            ideal = f"ideal: {alert['threshold']}"
+            alert_details.append(f"{metric_name} is {condition} ({alert['value']}, {ideal})")
+
+        alert_text = "\n".join(alert_details)
+
         prompt = (
-            f"You are Plantita, a caring plant expert. Create a friendly but urgent alert message about these concerning plant conditions:\n"
-            f"Current readings: {reading}\n"
-            f"Alerts: {alerts}\n"
-            f"Ideal ranges: {thresholds}\n"
-            f"Make it sound caring but emphasize the importance of addressing these issues."
+            f"You are Plantita, a caring plant expert and concerned aunt figure. Your beloved {plant_nickname} "
+            f"has some concerning readings that need attention:\n\n"
+            f"{alert_text}\n\n"
+            f"Create a caring but urgent notification message that:\n"
+            f"1. Expresses concern about the specific issues\n"
+            f"2. Explains the potential risks to the plant\n"
+            f"3. Provides immediate actions they can take\n"
+            f"4. Offers reassurance and support\n\n"
+            f"Keep the tone warm and caring but emphasize the importance of addressing these issues soon. "
+            f"Make it personal, like an aunt worried about her favorite plant."
         )
 
         response = client.chat.completions.create(
@@ -297,9 +357,16 @@ def send_alert(user_id, alerts, reading, thresholds):
 
         alert_message = response.choices[0].message.content
 
-        line_bot_api.push_message(
-            user_id,
-            messages=[TextMessage(text=alert_message)]
+        # Log the alert
+        logger.info(f"Sending alert to {user_id} for {plant_nickname}")
+        logger.debug(f"Alert message: {alert_message}")
+
+        # Send the message
+        line_bot_api.push_message_with_http_info(
+            {
+                'to': user_id,
+                'messages': [TextMessage(text=alert_message)]
+            }
         )
 
     except Exception as e:
@@ -615,31 +682,63 @@ def handle_text_message(event):
 
         elif user_states.get(user_id, {}).get('state') == 'awaiting_nickname':
             nickname = text.strip()
-            plant_name = user_states[user_id]['plant_name']
-            image_path = user_states[user_id]['image_path']
-
-            # Get plant health data from PlantID
-            health_data = get_health_assessment(image_path)
-
-            # Get thresholds from LLM if not provided by PlantID
-            thresholds = get_thresholds_from_llm(plant_name)
-            plant_details = health_data.get('health_info', {})
-            description = get_plant_description(plant_name, nickname, plant_details)
-
-            plant_data = {
-                'scientific_name': plant_name,
+            user_states[user_id].update({
                 'nickname': nickname,
-                'thresholds': thresholds,
-                'description': description,
-                'reading_history': []
-            }
-            save_user_plant_data(user_id, plant_data)
+                'state': 'awaiting_frequency'
+            })
             reply = (
-                f"Perfect! I've registered your {plant_name} with the nickname '{nickname}'. 🌱✨\n\n"
-                f"{description}\n\n"
-                "You can now monitor its health and get care advice!"
+                f"Great nickname! 🌱 Now, how often would you like me to check on {nickname}? Please choose:\n\n"
+                "1️⃣ Every minute (type '1')\n"
+                "2️⃣ Every hour (type '2')\n"
+                "3️⃣ Every 8 hours (type '3')"
             )
-            user_states[user_id] = {'state': 'idle'}
+
+        elif user_states.get(user_id, {}).get('state') == 'awaiting_frequency':
+            frequency_map = {
+                '1': {'minutes': 1, 'description': 'minute'},
+                '2': {'minutes': 60, 'description': 'hour'},
+                '3': {'minutes': 480, 'description': '8 hours'}
+            }
+
+            if text not in frequency_map:
+                reply = (
+                    "Please select a valid monitoring frequency:\n\n"
+                    "1️⃣ Every minute (type '1')\n"
+                    "2️⃣ Every hour (type '2')\n"
+                    "3️⃣ Every 8 hours (type '3')"
+                )
+            else:
+                frequency = frequency_map[text]
+                plant_name = user_states[user_id]['plant_name']
+                nickname = user_states[user_id]['nickname']
+                image_path = user_states[user_id]['image_path']
+
+                # Get plant health data from PlantID
+                health_data = get_health_assessment(image_path)
+
+                # Get thresholds from LLM if not provided by PlantID
+                thresholds = get_thresholds_from_llm(plant_name)
+                plant_details = health_data.get('health_info', {})
+                description = get_plant_description(plant_name, nickname, plant_details)
+
+                plant_data = {
+                    'scientific_name': plant_name,
+                    'nickname': nickname,
+                    'thresholds': thresholds,
+                    'description': description,
+                    'reading_history': [],
+                    'monitoring_frequency': frequency['minutes'],
+                    'last_check_time': datetime.now().isoformat(),
+                    'last_alert_time': None
+                }
+                save_user_plant_data(user_id, plant_data)
+                reply = (
+                    f"Perfect! I've registered your {plant_name} with the nickname '{nickname}'. 🌱✨\n\n"
+                    f"I'll check on {nickname} every {frequency['description']} and let you know if anything needs attention!\n\n"
+                    f"{description}\n\n"
+                    "You can now monitor its health and get care advice!"
+                )
+                user_states[user_id] = {'state': 'idle'}
 
         elif text.startswith("hi plantita, can you check on my plant"):
             readings = get_current_readings()
