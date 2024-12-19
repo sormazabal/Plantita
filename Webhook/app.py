@@ -114,7 +114,7 @@ def get_thresholds_from_llm(plant_name):
 
         prompt = (
             f"As a plant expert, provide the ideal growing conditions for {plant_name} in this exact format:\n"
-            f"temperature_min\ttemperature_max\thumidity_min\thumidity_max\tlight_min\tlight_max\tmoisture_min\tmoisture_max\n"
+            f"temperature_min\ttemperature_max\thumidity_min\thumidity_max\tmoisture_min\tmoisture_max\n"
             f"Only respond with tab-separated values in Celsius for temperature, percentage for others. No explanations."
         )
 
@@ -127,7 +127,6 @@ def get_thresholds_from_llm(plant_name):
         return {
             'temperature': {'min': float(values[0]), 'max': float(values[1])},
             'humidity': {'min': float(values[2]), 'max': float(values[3])},
-            'light': {'min': float(values[4]), 'max': float(values[5])},
             'moisture': {'min': float(values[6]), 'max': float(values[7])}
         }
     except Exception as e:
