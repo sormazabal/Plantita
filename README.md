@@ -1,6 +1,13 @@
 # Plantita
 Semester project for Intro to AIoT at TIGP.
 
+
+## Demo:
+
+[Demo video (YouTube)](https://youtu.be/N-dqjbmCl-g?si=WdOUj_fcBQgVd7VY)
+
+
+
 ## Authors:
 - Eugene Sy (@eugenesy)
 - Zow Ormazabal (@sormazabal)
